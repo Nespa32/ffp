@@ -33,18 +33,13 @@ struct ffp_node {
 	enum ntype type;
 	union unode u;
 };
-/*
-struct ffp_head {
-	struct ffp_node *entry_hash;
-	struct mr_entry *array;
-	int max_threads;
-};
-*/
-void search_remove_hash(
+
+
+struct ffp_node *search_remove_hash(
 		struct ffp_node *hnode,
 		unsigned long long hash);
 
-void search_remove_chain(
+struct ffp_node *search_remove_chain(
 		struct ffp_node *hnode,
 		unsigned long long hash);
 
@@ -133,9 +128,12 @@ void ffp_remove(
 		unsigned long long hash,
 		int thread_id)
 {
-	return search_remove_hash(
-			head.entry_hash,
-			hash);
+	mr_reclaim_node(
+			search_remove_hash(
+				head.entry_hash,
+				hash),
+			head.array,
+			thread_id);
 }
 
 //auxiliary
@@ -300,7 +298,7 @@ void make_invisible(struct ffp_node *cnode, struct ffp_node *hnode)
 
 //remove functions
 
-void search_remove_chain(
+struct ffp_node * search_remove_chain(
 		struct ffp_node *hnode,
 		unsigned long long hash)
 {
@@ -316,8 +314,11 @@ void search_remove_chain(
 			if(hash == iter->u.ans.hash){
 				if(mark_invalid(iter)){
 					make_invisible(iter, hnode);
+					return iter;
 				}
-				return;
+				else{
+					return NULL;
+				}
 			}
 		}
 		iter = valid_ptr(atomic_load_explicit(
@@ -325,14 +326,14 @@ void search_remove_chain(
 					memory_order_relaxed));
 	}
 	if(iter == hnode)
-		return;
+		return NULL;
 	while(iter->u.hash.prev != hnode){
 		iter = iter->u.hash.prev;
 	}
-	search_remove_hash(iter, hash);
+	return search_remove_hash(iter, hash);
 }
 
-void search_remove_hash(
+struct ffp_node * search_remove_hash(
 		struct ffp_node *hnode,
 		unsigned long long hash)
 {
@@ -345,10 +346,11 @@ void search_remove_hash(
 			memory_order_relaxed);
 	if(entry_node != hnode){
 		if(entry_node->type == ANS)
-			search_remove_chain(hnode, hash);
+			return search_remove_chain(hnode, hash);
 		else
-			search_remove_hash(entry_node, hash);
+			return search_remove_hash(entry_node, hash);
 	}
+	return NULL;
 }
 
 //insertion functions

@@ -7,3 +7,8 @@ int mr_thread_acquire(
 void mr_thread_release(
 		struct mr_entry *array,
 		int thread_id);
+
+void mr_reclaim_node(
+		void *node,
+		struct mr_entry *array,
+		int thread_id);
