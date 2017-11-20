@@ -290,9 +290,6 @@ void make_invisible(struct ffp_node *cnode, struct ffp_node *hnode)
 			return;
 		}
 	}
-	while(iter->u.hash.prev !=hnode){
-		iter = iter->u.hash.prev;
-	}
 	return make_invisible(cnode, iter);
 }
 
