@@ -61,11 +61,7 @@ void adjust_chain_nodes(
 		struct ffp_node *cnode,
 		struct ffp_node *hnode);
 
-void adjust_node_hash(
-		struct ffp_node *cnode,
-		struct ffp_node *hnode);
-
-void adjust_node_chain(
+void adjust_node(
 		struct ffp_node *cnode,
 		struct ffp_node *hnode);
 
@@ -509,41 +505,14 @@ void adjust_chain_nodes(struct ffp_node *cnode, struct ffp_node *hnode)
 				memory_order_relaxed));
 	if(next != hnode)
 		adjust_chain_nodes(next, hnode);
-	if(is_valid(cnode))
-		adjust_node_hash(cnode, hnode);
+	if(is_valid(cnode)){
+		force_cas(cnode, hnode);
+		adjust_node(cnode, hnode);
+	}
 	return;
 }
 
-void adjust_node_hash(struct ffp_node *cnode, struct ffp_node *hnode)
-{
-	force_cas(cnode, hnode);
-	if(!is_valid(cnode))
-		return;
-	int pos = get_bucket(
-			cnode->u.ans.hash,
-			hnode->u.hash.hash_pos,
-			hnode->u.hash.size);
-	struct ffp_node *tmp = atomic_load_explicit(
-			&(hnode->u.hash.array[pos]),
-			memory_order_relaxed);
-	if(hnode == tmp){
-		struct ffp_node *hcopy = hnode;
-		if(atomic_compare_exchange_strong(
-					&(hnode->u.hash.array[pos]),
-					&hcopy,
-					cnode)){
-			if(!is_valid(cnode))
-				make_invisible(cnode, hnode);
-			return;
-		}
-	}
-	if(tmp->type==ANS)
-		return adjust_node_chain(cnode, hnode);
-	else
-		return adjust_node_hash(cnode, tmp);
-}
-
-void adjust_node_chain(
+void adjust_node(
 		struct ffp_node *cnode,
 		struct ffp_node *hnode)
 {
@@ -557,7 +526,7 @@ void adjust_node_chain(
 					&(hnode->u.hash.array[pos]),
 					memory_order_relaxed),
 			*iter = expected_value;
-	do{
+	while(iter->type == ANS){
 		if(is_valid(iter)){
 			current_valid = iter;
 			expected_value = valid_ptr(atomic_load_explicit(
@@ -571,9 +540,11 @@ void adjust_node_chain(
 						&(iter->u.ans.next),
 						memory_order_relaxed));
 		}
-	}while(iter->type == ANS);
+	}
+	if(!is_valid(cnode))
+		return;
 	if(iter == hnode){
-		if(counter == 0){
+		if(current_valid == NULL){
 			if(atomic_compare_exchange_strong(
 						&(hnode->u.hash.array[pos]),
 						&expected_value,
@@ -583,7 +554,20 @@ void adjust_node_chain(
 				return;
 			}
 			else{
-				return adjust_node_chain(cnode, hnode);
+				return adjust_node(cnode, hnode);
+			}
+		}
+		else if(counter == 0){
+			if(atomic_compare_exchange_strong(
+						&(hnode->u.hash.array[pos]),
+						&expected_value,
+						cnode)){
+				if(!is_valid(cnode))
+					make_invisible(cnode, hnode);
+				return;
+			}
+			else{
+				return adjust_node(cnode, hnode);
 			}
 		}
 		else if(counter >=MAX_NODES){
@@ -604,7 +588,7 @@ void adjust_node_chain(
 						&(hnode->u.hash.array[pos]),
 						new_hash,
 						memory_order_relaxed);
-				return adjust_node_hash(
+				return adjust_node(
 						cnode,
 						new_hash);
 			}
@@ -621,13 +605,13 @@ void adjust_node_chain(
 			return;
 		}
 		else{
-			return adjust_node_chain(cnode, hnode);
+			return adjust_node(cnode, hnode);
 		}
 	}
 	while(iter->u.hash.prev != hnode){
 		iter = iter->u.hash.prev;
 	}
-	return adjust_node_hash(cnode, iter);
+	return adjust_node(cnode, iter);
 }
 
 // searching functions
