@@ -190,6 +190,11 @@ struct ffp_node *valid_ptr(struct ffp_node *next)
 	return (struct ffp_node *) ((uintptr_t) next & ~3);
 }
 
+struct ffp_node *valid_node_ptr(struct ffp_node *next)
+{
+	return (struct ffp_node *) ((uintptr_t) next & ~1);
+}
+
 int mark_invalid(struct ffp_node *cnode)
 {
 	struct ffp_node *expect = valid_ptr(atomic_load_explicit(
@@ -438,10 +443,10 @@ struct ffp_node *search_insert_hash(
 			hash,
 			hnode->u.hash.hash_pos,
 			hnode->u.hash.size);
-	struct ffp_node *tmp = valid_ptr(atomic_load_explicit(
-				&(hnode->u.hash.array[pos]),
-				memory_order_relaxed));
-	if(hnode == tmp){
+	struct ffp_node *tmp = atomic_load_explicit(
+			&(hnode->u.hash.array[pos]),
+			memory_order_relaxed);
+	if(hnode == valid_ptr(tmp)){
 		struct ffp_node *hcopy = hnode,
 				*new_node = create_ans_node(
 						hash,
@@ -455,18 +460,18 @@ struct ffp_node *search_insert_hash(
 		else
 			ffp_free(new_node);
 	}
-	if(tmp->type==ANS)
+	if(valid_ptr(tmp)->type==ANS)
 		return search_insert_chain(
 				hnode,
 				hash,
 				value,
-				tmp,
+				valid_ptr(tmp),
 				NULL,
-				tmp,
+				valid_node_ptr(tmp),
 				0);
 	else
 		return search_insert_hash(
-				tmp,
+				valid_ptr(tmp),
 				hash,
 				value);
 }
@@ -485,7 +490,7 @@ struct ffp_node *search_insert_chain(
 			return cnode;
 		counter++;
 		current_valid = cnode;
-		expected_value = valid_ptr(atomic_load_explicit(
+		expected_value = valid_node_ptr(atomic_load_explicit(
 					&(current_valid->u.ans.next),
 					memory_order_relaxed));
 	}
