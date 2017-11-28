@@ -79,6 +79,12 @@ struct ffp_node *create_hash_node(
 		int hash_pos,
 		struct ffp_node *prev);
 
+void reconnect_chain(
+		struct ffp_node *cnode,
+		struct ffp_node *hnode,
+		struct ffp_node *valid_after);
+
+
 //interface
 
 struct ffp_head init_ffp(int max_threads){
@@ -181,7 +187,7 @@ int get_bucket(
 
 struct ffp_node *valid_ptr(struct ffp_node *next)
 {
-	return (struct ffp_node *) ((uintptr_t) next & ~1);
+	return (struct ffp_node *) ((uintptr_t) next & ~3);
 }
 
 int mark_invalid(struct ffp_node *cnode)
@@ -204,6 +210,24 @@ int is_valid(struct ffp_node *cnode)
 	return !((uintptr_t) atomic_load_explicit(
 				&(cnode->u.ans.next),
 				memory_order_relaxed) & 1);
+}
+
+int ip_flag(struct ffp_node *ptr)
+{
+	return (uintptr_t) ptr & 2;
+}
+
+void clear_ip_flag(struct ffp_node * _Atomic *ptr)
+{
+	struct ffp_node *expect = atomic_load_explicit(
+			ptr,
+			memory_order_relaxed);
+	while(ip_flag(expect))
+		if(atomic_compare_exchange_weak(
+					ptr,
+					&expect,
+					(struct ffp_node *) ((uintptr_t) expect & ~2)))
+			return;
 }
 
 void force_cas(struct ffp_node *node, struct ffp_node *hash)
@@ -230,6 +254,54 @@ struct ffp_node *get_next_valid(struct ffp_node *node)
 		return get_next_valid(node);
 }
 
+struct ffp_node *flag_insert_point(
+		struct ffp_node *hnode,
+		struct ffp_node *cnode)
+{
+	int pos = get_bucket(
+			cnode->u.ans.hash,
+			hnode->u.hash.hash_pos,
+			hnode->u.hash.size);
+	struct ffp_node *_Atomic *current_valid = &(hnode->u.hash.array[pos]),
+			*expected = atomic_load_explicit(
+					current_valid,
+					memory_order_relaxed),
+			*iter = valid_ptr(expected);
+	while(iter != cnode && iter->type == ANS){
+		if(is_valid(iter)){
+			current_valid = &(iter->u.ans.next);
+			expected = valid_ptr(atomic_load_explicit(
+						current_valid,
+						memory_order_relaxed));
+			iter = expected;
+		}
+		else{
+			iter = valid_ptr(atomic_load_explicit(
+						&(iter->u.ans.next),
+						memory_order_relaxed));
+		}
+	}
+	if(iter == cnode)
+		return hnode;
+	if(iter == hnode){
+		if(atomic_compare_exchange_strong(
+					current_valid,
+					&expected,
+					(struct ffp_node *) ((uintptr_t) expected | 2))){
+			return NULL;
+		}
+		else{
+			if(expected == (struct ffp_node *) ((uintptr_t) hnode | 2))
+				return NULL;
+			else
+				return flag_insert_point(hnode, cnode);
+		}
+	}
+	while(iter->u.hash.prev != hnode)
+		iter = iter->u.hash.prev;
+	return flag_insert_point(iter, cnode);
+}
+
 void make_invisible(struct ffp_node *cnode, struct ffp_node *hnode)
 {
 	struct ffp_node *valid_after = get_next_valid(cnode);
@@ -239,51 +311,67 @@ void make_invisible(struct ffp_node *cnode, struct ffp_node *hnode)
 					&(iter->u.ans.next),
 					memory_order_relaxed));
 	if(iter == hnode){
-		int pos = get_bucket(
-				cnode->u.ans.hash,
-				hnode->u.hash.hash_pos,
-				hnode->u.hash.size);
-		iter = atomic_load_explicit(
+		return reconnect_chain(cnode, hnode, valid_after);
+	}
+	iter = flag_insert_point(iter, cnode);
+	if(iter)
+		return make_invisible(cnode, iter);
+	return reconnect_chain(cnode, hnode, valid_after);
+}
+
+void reconnect_chain(
+		struct ffp_node *cnode,
+		struct ffp_node *hnode,
+		struct ffp_node *valid_after)
+{
+	int pos = get_bucket(
+			cnode->u.ans.hash,
+			hnode->u.hash.hash_pos,
+			hnode->u.hash.size);
+	struct ffp_node *iter = valid_ptr(atomic_load_explicit(
 				&(hnode->u.hash.array[pos]),
-				memory_order_relaxed);
-		struct ffp_node *valid_before = NULL;
-		struct ffp_node *valid_before_next = iter;
-		while(iter !=cnode && iter->type == ANS){
-			if(is_valid(iter)){
-				valid_before = iter;
-				valid_before_next = valid_ptr(atomic_load_explicit(
-							&(iter->u.ans.next),
-							memory_order_relaxed));
-				iter = valid_before_next;
-			}
-			else{
-				iter = valid_ptr(atomic_load_explicit(
-							&(iter->u.ans.next),
-							memory_order_relaxed));
-			}
+				memory_order_relaxed)),
+			*valid_before = NULL,
+			*valid_before_next = iter;
+	while(iter !=cnode && iter->type == ANS){
+		if(is_valid(iter)){
+			valid_before = iter;
+			valid_before_next = valid_ptr(atomic_load_explicit(
+						&(iter->u.ans.next),
+						memory_order_relaxed));
+			iter = valid_before_next;
 		}
-		if(iter == cnode){
-			if(valid_before == NULL){
-				if(atomic_compare_exchange_strong(
-							&(hnode->u.hash.array[pos]),
-							&valid_before_next,
-							valid_after))
-					return;
-			}
-			else{
-				if(atomic_compare_exchange_strong(
-							&(valid_before->u.ans.next),
-							&valid_before_next,
-							valid_after))
-					return;
-			}
-			return make_invisible(cnode, hnode);
-		}
-		else if(iter == hnode){
-			return;
+		else{
+			iter = valid_ptr(atomic_load_explicit(
+						&(iter->u.ans.next),
+						memory_order_relaxed));
 		}
 	}
-	return make_invisible(cnode, iter);
+	if(iter == cnode){
+		if(valid_before == NULL){
+			if(atomic_compare_exchange_strong(
+						&(hnode->u.hash.array[pos]),
+						&valid_before_next,
+						valid_after))
+				return;
+		}
+		else{
+			if(atomic_compare_exchange_strong(
+						&(valid_before->u.ans.next),
+						&valid_before_next,
+						valid_after))
+				return;
+		}
+		return make_invisible(cnode, hnode);
+	}
+	else if(iter == hnode){
+		return;
+	}
+	else{
+		while(iter->u.hash.prev != hnode)
+			iter = iter->u.hash.prev;
+		return reconnect_chain(cnode, iter, valid_after);
+	}
 }
 
 //remove functions
@@ -296,9 +384,9 @@ void search_remove_chain(
 			hash,
 			hnode->u.hash.hash_pos,
 			hnode->u.hash.size);
-	struct ffp_node *iter = atomic_load_explicit(
-			&(hnode->u.hash.array[pos]),
-			memory_order_relaxed);
+	struct ffp_node *iter = valid_ptr(atomic_load_explicit(
+				&(hnode->u.hash.array[pos]),
+				memory_order_relaxed));
 	while(iter->type == ANS){
 		if(is_valid(iter)){
 			if(hash == iter->u.ans.hash){
@@ -328,9 +416,9 @@ void search_remove_hash(
 			hash,
 			hnode->u.hash.hash_pos,
 			hnode->u.hash.size);
-	struct ffp_node *entry_node = atomic_load_explicit(
-			&(hnode->u.hash.array[pos]),
-			memory_order_relaxed);
+	struct ffp_node *entry_node = valid_ptr(atomic_load_explicit(
+				&(hnode->u.hash.array[pos]),
+				memory_order_relaxed));
 	if(entry_node != hnode){
 		if(entry_node->type == ANS)
 			search_remove_chain(hnode, hash);
@@ -350,9 +438,9 @@ struct ffp_node *search_insert_hash(
 			hash,
 			hnode->u.hash.hash_pos,
 			hnode->u.hash.size);
-	struct ffp_node *tmp = atomic_load_explicit(
-			&(hnode->u.hash.array[pos]),
-			memory_order_relaxed);
+	struct ffp_node *tmp = valid_ptr(atomic_load_explicit(
+				&(hnode->u.hash.array[pos]),
+				memory_order_relaxed));
 	if(hnode == tmp){
 		struct ffp_node *hcopy = hnode,
 				*new_node = create_ans_node(
@@ -419,9 +507,9 @@ struct ffp_node *search_insert_chain(
 						hnode->u.hash.hash_pos,
 						hnode->u.hash.size);
 				adjust_chain_nodes(
-						atomic_load_explicit(
-							&(hnode->u.hash.array[pos]),
-							memory_order_relaxed),
+						valid_ptr(atomic_load_explicit(
+								&(hnode->u.hash.array[pos]),
+								memory_order_relaxed)),
 						new_hash);
 				atomic_store_explicit(
 						&(hnode->u.hash.array[pos]),
@@ -515,9 +603,9 @@ void adjust_node(
 			hnode->u.hash.hash_pos,
 			hnode->u.hash.size);
 	struct ffp_node *current_valid = NULL,
-			*expected_value = atomic_load_explicit(
-					&(hnode->u.hash.array[pos]),
-					memory_order_relaxed),
+			*expected_value = valid_ptr(atomic_load_explicit(
+						&(hnode->u.hash.array[pos]),
+						memory_order_relaxed)),
 			*iter = expected_value;
 	while(iter->type == ANS){
 		if(is_valid(iter)){
@@ -537,29 +625,18 @@ void adjust_node(
 	if(!is_valid(cnode))
 		return;
 	if(iter == hnode){
-		if(current_valid == NULL){
+		if(current_valid == NULL || counter == 0){
 			if(atomic_compare_exchange_strong(
 						&(hnode->u.hash.array[pos]),
 						&expected_value,
 						cnode)){
-				if(!is_valid(cnode))
-					make_invisible(cnode, hnode);
 				return;
 			}
 			else{
-				return adjust_node(cnode, hnode);
-			}
-		}
-		else if(counter == 0){
-			if(atomic_compare_exchange_strong(
-						&(hnode->u.hash.array[pos]),
-						&expected_value,
-						cnode)){
+				if(ip_flag(expected_value))
+					clear_ip_flag(&(hnode->u.hash.array[pos]));
 				if(!is_valid(cnode))
-					make_invisible(cnode, hnode);
-				return;
-			}
-			else{
+					return;
 				return adjust_node(cnode, hnode);
 			}
 		}
@@ -573,9 +650,9 @@ void adjust_node(
 						&(expected_value),
 						new_hash)){
 				adjust_chain_nodes(
-						atomic_load_explicit(
-							&(hnode->u.hash.array[pos]),
-							memory_order_relaxed),
+						valid_ptr(atomic_load_explicit(
+								&(hnode->u.hash.array[pos]),
+								memory_order_relaxed)),
 						new_hash);
 				atomic_store_explicit(
 						&(hnode->u.hash.array[pos]),
@@ -587,17 +664,24 @@ void adjust_node(
 			}
 			else{
 				ffp_free(new_hash);
+				if(ip_flag(expected_value))
+					clear_ip_flag(&(current_valid->u.ans.next));
+				if(!is_valid(cnode))
+					return;
+				return adjust_node(cnode, hnode);
 			}
 		}
 		else if(atomic_compare_exchange_strong(
 					&(current_valid->u.ans.next),
 					&expected_value,
 					cnode)){
-			if(!is_valid(cnode))
-				make_invisible(cnode, hnode);
 			return;
 		}
 		else{
+			if(ip_flag(expected_value))
+				clear_ip_flag(&(current_valid->u.ans.next));
+			if(!is_valid(cnode))
+				return;
 			return adjust_node(cnode, hnode);
 		}
 	}
@@ -617,9 +701,9 @@ void *search_hash(
 			hash,
 			hnode->u.hash.hash_pos,
 			hnode->u.hash.size);
-	struct ffp_node *next_node = atomic_load_explicit(
-			&(hnode->u.hash.array[pos]),
-			memory_order_relaxed);
+	struct ffp_node *next_node = valid_ptr(atomic_load_explicit(
+				&(hnode->u.hash.array[pos]),
+				memory_order_relaxed));
 	if(next_node == hnode)
 		return NULL;
 	else if(next_node->type == HASH)
@@ -642,6 +726,7 @@ void *search_chain(
 		return NULL;
 	else if(next_node->type == ANS)
 		return search_chain(next_node, hnode, hash);
-	else
-		return search_hash(next_node, hash);
+	while(next_node->u.hash.prev != hnode)
+		next_node = next_node->u.hash.prev;
+	return search_hash(next_node, hash);
 }
