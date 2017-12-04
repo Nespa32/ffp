@@ -148,7 +148,7 @@ void ffp_remove(
 			search_remove_hash(
 				head.entry_hash,
 				hash),
-			head.array,
+			head.thread_array,
 			thread_id);
 }
 
