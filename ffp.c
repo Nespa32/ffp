@@ -41,11 +41,11 @@ struct ffp_node {
 };
 
 
-void search_remove_hash(
+struct ffp_node *search_remove_hash(
 		struct ffp_node *hnode,
 		unsigned long long hash);
 
-void search_remove_chain(
+struct ffp_node *search_remove_chain(
 		struct ffp_node *hnode,
 		unsigned long long hash);
 
@@ -129,6 +129,10 @@ void *ffp_search(
 		unsigned long long hash,
 		int thread_id)
 {
+	mr_quiescent_state(
+			head.thread_array,
+			thread_id,
+			head.max_threads);
 	return search_hash(head.entry_hash, hash);
 }
 
@@ -138,6 +142,10 @@ struct ffp_node *ffp_insert(
 		void *value,
 		int thread_id)
 {
+	mr_quiescent_state(
+			head.thread_array,
+			thread_id,
+			head.max_threads);
 	return search_insert_hash(
 			head.entry_hash,
 			hash,
@@ -149,9 +157,13 @@ void ffp_remove(
 		unsigned long long hash,
 		int thread_id)
 {
-	return search_remove_hash(
-			head.entry_hash,
-			hash);
+	mr_reclaim_node(
+			head.thread_array,
+			thread_id,
+			head.max_threads,
+			search_remove_hash(
+				head.entry_hash,
+				hash));
 }
 
 //debug interface
@@ -414,7 +426,7 @@ void reconnect_chain(
 
 //remove functions
 
-void search_remove_chain(
+struct ffp_node *search_remove_chain(
 		struct ffp_node *hnode,
 		unsigned long long hash)
 {
@@ -430,8 +442,9 @@ void search_remove_chain(
 			if(hash == iter->u.ans.hash){
 				if(mark_invalid(iter)){
 					make_invisible(iter, hnode);
+					return iter;
 				}
-				return;
+				return NULL;
 			}
 		}
 		iter = valid_ptr(atomic_load_explicit(
@@ -439,14 +452,14 @@ void search_remove_chain(
 					memory_order_relaxed));
 	}
 	if(iter == hnode)
-		return;
+		return NULL;
 	while(iter->u.hash.prev != hnode){
 		iter = iter->u.hash.prev;
 	}
-	search_remove_hash(iter, hash);
+	return search_remove_hash(iter, hash);
 }
 
-void search_remove_hash(
+struct ffp_node *search_remove_hash(
 		struct ffp_node *hnode,
 		unsigned long long hash)
 {
@@ -459,10 +472,11 @@ void search_remove_hash(
 				memory_order_relaxed));
 	if(entry_node != hnode){
 		if(entry_node->type == ANS)
-			search_remove_chain(hnode, hash);
+			return search_remove_chain(hnode, hash);
 		else
-			search_remove_hash(entry_node, hash);
+			return search_remove_hash(entry_node, hash);
 	}
+	return NULL;
 }
 
 //insertion functions
@@ -767,10 +781,9 @@ void *debug_search_chain(
 		unsigned long long hash)
 {
 	if(cnode->u.ans.hash == hash){
-		if(!is_valid(cnode))
+		if(is_valid(cnode))
 			printf("Invalid node found: %p\n", cnode->u.ans.value);
-		else
-			return cnode->u.ans.value;
+		return cnode->u.ans.value;
 	}
 	struct ffp_node *next_node = valid_ptr(atomic_load_explicit(
 				&(cnode->u.ans.next),
