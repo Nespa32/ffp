@@ -36,13 +36,19 @@ unsigned long long get_lamport_time(
 	unsigned long long max = 0,
 			   tmp;
 	for(int i=0; i<max_threads; i++){
-		if(atomic_flag_test_and_set(&(array[i].claim))){
-			tmp = atomic_load(&(array[i].clock));
+		if(atomic_flag_test_and_set_explicit(
+					&(array[i].claim),
+					memory_order_relaxed)){
+			tmp = atomic_load_explicit(
+					&(array[i].clock),
+					memory_order_acquire);
 			if(tmp > max)
 				max = tmp;
 		}
 		else{
-			atomic_flag_clear(&(array[i].claim));
+			atomic_flag_clear_explicit(
+					&(array[i].claim),
+					memory_order_relaxed);
 		}
 	}
 	return max + 1;
@@ -55,13 +61,19 @@ unsigned long long get_min_time(
 	unsigned long long min = ~0,
 			   tmp;
 	for(int i=0; i<max_threads; i++){
-		if(atomic_flag_test_and_set(&(array[i].claim))){
-			tmp = atomic_load(&(array[i].clock));
+		if(atomic_flag_test_and_set_explicit(
+					&(array[i].claim),
+					memory_order_relaxed)){
+			tmp = atomic_load_explicit(
+					&(array[i].clock),
+					memory_order_acquire);
 			if(tmp < min)
 				min = tmp;
 		}
 		else{
-			atomic_flag_clear(&(array[i].claim));
+			atomic_flag_clear_explicit(
+					&(array[i].claim),
+					memory_order_relaxed);
 		}
 	}
 	return min;
@@ -93,9 +105,10 @@ int mr_thread_acquire(
 	int i = 0;
 	while(1){
 		if(!atomic_flag_test_and_set(&(array[i].claim))){
-			atomic_store(
+			atomic_store_explicit(
 					&(array[i].clock),
-					get_lamport_time(array, max_threads));
+					get_lamport_time(array, max_threads),
+					memory_order_release);
 			return i;
 		}
 		i = (i+1) % max_threads;
@@ -114,9 +127,10 @@ void mr_quiescent_state(
 		int thread_id,
 		int max_threads)
 {
-	atomic_store(
+	atomic_store_explicit(
 			&(array[thread_id].clock),
-			get_lamport_time(array, max_threads));
+			get_lamport_time(array, max_threads),
+			memory_order_release);
 }
 
 void mr_reclaim_node(
@@ -132,5 +146,8 @@ void mr_reclaim_node(
 			array[thread_id].head,
 			get_min_time(array, max_threads));
 	STAILQ_INSERT_TAIL(array[thread_id].head, mr_node, entries);
-	atomic_store(&(array[thread_id].clock), mr_node->rm_time);
+	atomic_store_explicit(
+			&(array[thread_id].clock),
+			mr_node->rm_time,
+			memory_order_release);
 }
