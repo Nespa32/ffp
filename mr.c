@@ -3,6 +3,8 @@
 #include <sys/queue.h>
 #include <mr.h>
 
+#define CACHE_LINE_SIZE 64
+
 STAILQ_HEAD(stailhead, entry);
 
 struct entry {
@@ -15,7 +17,7 @@ struct mr_entry {
 	atomic_flag claim;
 	atomic_ullong clock;
 	struct stailhead *head;
-};
+} __attribute__((aligned(CACHE_LINE_SIZE)));
 
 struct mr_entry *init_mr(int max_threads)
 {
