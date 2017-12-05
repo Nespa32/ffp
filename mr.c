@@ -3,12 +3,13 @@
 #include <mr.h>
 
 #define LIST_SIZE 1024
+#define CACHE_LINE_SIZE 64
 
 struct mr_entry {
 	atomic_flag claim;
 	void **tls;
 	int index;
-};
+} __attribute__((aligned(CACHE_LINE_SIZE)));
 
 struct mr_entry *init_mr(int max_threads)
 {
