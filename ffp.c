@@ -537,7 +537,7 @@ struct ffp_node *search_insert_chain(
 			return cnode;
 		counter++;
 		current_valid = &(cnode->u.ans.next);
-		expected_value = valid_ptr(atomic_load_explicit(
+		expected_value = valid_node_ptr(atomic_load_explicit(
 					current_valid,
 					memory_order_relaxed));
 	}
