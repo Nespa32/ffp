@@ -7,11 +7,17 @@
 #if FFP_DEBUG
 
 #include <stdio.h>
+#include <assert.h>
 
-#endif
+#define MAX_NODES 2
+#define HASH_SIZE 1
+
+#else
 
 #define MAX_NODES 5
 #define HASH_SIZE 4
+
+#endif
 
 enum ntype {HASH, ANS};
 
@@ -441,10 +447,13 @@ struct ffp_node *search_insert_chain(
 		expected_value = valid_ptr(atomic_load_explicit(
 					current_valid,
 					memory_order_relaxed));
+		cnode = expected_value;
 	}
-	cnode = valid_ptr(atomic_load_explicit(
-				&(cnode->u.ans.next),
-				memory_order_relaxed));
+	else{
+		cnode = valid_ptr(atomic_load_explicit(
+					&(cnode->u.ans.next),
+					memory_order_relaxed));
+	}
 	if(cnode == hnode){
 		if(counter >= MAX_NODES){
 			struct ffp_node *new_hash = create_hash_node(
@@ -683,7 +692,7 @@ void *debug_search_chain(
 {
 	if(cnode->u.ans.hash == hash){
 		if(!is_valid(cnode))
-			printf("Invalid node found: %p\n", cnode->u.ans.value);
+			fprintf(stderr, "Invalid node found: %p\n", cnode->u.ans.value);
 		else
 			return cnode->u.ans.value;
 	}
