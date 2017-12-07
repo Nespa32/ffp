@@ -363,6 +363,8 @@ void make_invisible(struct ffp_node *cnode, struct ffp_node *hnode)
 	if(iter == hnode){
 		return reconnect_chain(cnode, hnode, valid_after);
 	}
+	while(iter->u.hash.prev != hnode)
+		iter = iter->u.hash.prev;
 	iter = flag_insert_point(iter, cnode);
 	if(iter)
 		return make_invisible(cnode, iter);
@@ -386,10 +388,10 @@ void reconnect_chain(
 	while(iter !=cnode && iter->type == ANS){
 		if(is_valid(iter)){
 			valid_before = iter;
-			valid_before_next = valid_ptr(atomic_load_explicit(
+			valid_before_next = valid_node_ptr(atomic_load_explicit(
 						&(iter->u.ans.next),
 						memory_order_relaxed));
-			iter = valid_before_next;
+			iter = valid_ptr(valid_before_next);
 		}
 		else{
 			iter = valid_ptr(atomic_load_explicit(
@@ -494,7 +496,7 @@ struct ffp_node *search_insert_hash(
 			&(hnode->u.hash.array[pos]),
 			memory_order_relaxed);
 	if(hnode == valid_ptr(tmp)){
-		struct ffp_node *hcopy = hnode,
+		struct ffp_node *hcopy = tmp,
 				*new_node = create_ans_node(
 						hash,
 						value,
@@ -622,7 +624,6 @@ void adjust_chain_nodes(struct ffp_node *cnode, struct ffp_node *hnode)
 	if(next != hnode)
 		adjust_chain_nodes(next, hnode);
 	if(is_valid(cnode)){
-		force_cas(cnode, hnode);
 		adjust_node(cnode, hnode);
 	}
 	return;
@@ -660,12 +661,20 @@ void adjust_node(
 	if(!is_valid(cnode))
 		return;
 	if(iter == hnode){
+		force_cas(cnode, hnode);
 		if(current_valid == NULL || counter == 0){
 			if(atomic_compare_exchange_strong(
 						&(hnode->u.hash.array[pos]),
 						&expected_value,
 						cnode)){
 				return;
+			}
+			else{
+				if(ip_flag(expected_value))
+					clear_ip_flag(&(hnode->u.hash.array[pos]));
+				if(!is_valid(cnode))
+					return;
+				return adjust_node(cnode, hnode);
 			}
 		}
 		else if(counter >=MAX_NODES){
@@ -764,9 +773,9 @@ void *debug_search_hash(
 			hash,
 			hnode->u.hash.hash_pos,
 			hnode->u.hash.size);
-	struct ffp_node *next_node = atomic_load_explicit(
-			&(hnode->u.hash.array[pos]),
-			memory_order_relaxed);
+	struct ffp_node *next_node = valid_ptr(atomic_load_explicit(
+				&(hnode->u.hash.array[pos]),
+				memory_order_relaxed));
 	if(next_node == hnode)
 		return NULL;
 	else if(next_node->type == HASH)
