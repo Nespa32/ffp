@@ -21,7 +21,9 @@ struct mr_entry {
 
 struct mr_entry *init_mr(int max_threads)
 {
-	struct mr_entry *array = calloc(max_threads, sizeof(struct mr_entry));
+	struct mr_entry *array = aligned_alloc(
+			CACHE_LINE_SIZE,
+			max_threads * sizeof(struct mr_entry));
 	for(int i=0; i<max_threads; i++){
 		atomic_store(&(array[i].clock), 0);
 		array[i].head = malloc(sizeof(struct stailhead));
