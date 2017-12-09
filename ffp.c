@@ -386,11 +386,11 @@ void reconnect_chain(
 			cnode->u.ans.hash,
 			hnode->u.hash.hash_pos,
 			hnode->u.hash.size);
-	struct ffp_node *iter = valid_ptr(atomic_load_explicit(
+	struct ffp_node *valid_before_next = atomic_load_explicit(
 				&(hnode->u.hash.array[pos]),
-				memory_order_relaxed)),
+				memory_order_relaxed),
 			*valid_before = NULL,
-			*valid_before_next = iter;
+			*iter = valid_ptr(valid_before_next);
 	while(iter !=cnode && iter->type == ANS){
 		if(is_valid(iter)){
 			valid_before = iter;
@@ -406,6 +406,9 @@ void reconnect_chain(
 		}
 	}
 	if(iter == cnode){
+#if FFP_DEBUG
+		assert(valid_after != valid_before);
+#endif
 		if(valid_before == NULL){
 			if(atomic_compare_exchange_strong(
 						&(hnode->u.hash.array[pos]),
@@ -569,15 +572,18 @@ struct ffp_node *search_insert_chain(
 						hash,
 						hnode->u.hash.hash_pos,
 						hnode->u.hash.size);
-				adjust_chain_nodes(
-						valid_ptr(atomic_load_explicit(
-								&(hnode->u.hash.array[pos]),
-								memory_order_relaxed)),
-						new_hash);
-				atomic_store_explicit(
-						&(hnode->u.hash.array[pos]),
-						new_hash,
-						memory_order_relaxed);
+				struct ffp_node *tmp = valid_ptr(atomic_load_explicit(
+							&(hnode->u.hash.array[pos]),
+							memory_order_relaxed));
+				if(tmp != new_hash){
+					adjust_chain_nodes(
+							tmp,
+							new_hash);
+					atomic_store_explicit(
+							&(hnode->u.hash.array[pos]),
+							new_hash,
+							memory_order_relaxed);
+				}
 				return search_insert_hash(
 						new_hash,
 						hash,
@@ -627,6 +633,9 @@ struct ffp_node *search_insert_chain(
 
 void adjust_chain_nodes(struct ffp_node *cnode, struct ffp_node *hnode)
 {
+#if FFP_DEBUG
+	assert(cnode->type != HASH);
+#endif
 	struct ffp_node *next = valid_ptr(atomic_load_explicit(
 				&(cnode->u.ans.next),
 				memory_order_relaxed));
@@ -670,6 +679,9 @@ void adjust_node(
 	if(!is_valid(cnode))
 		return;
 	if(iter == hnode){
+#if FFP_DEBUG
+		assert(current_valid != cnode); //bug here
+#endif
 		force_cas(cnode, hnode);
 		if(current_valid == NULL || counter == 0){
 			if(atomic_compare_exchange_strong(
@@ -695,15 +707,18 @@ void adjust_node(
 						&(current_valid->u.ans.next),
 						&(expected_value),
 						new_hash)){
-				adjust_chain_nodes(
-						valid_ptr(atomic_load_explicit(
-								&(hnode->u.hash.array[pos]),
-								memory_order_relaxed)),
-						new_hash);
-				atomic_store_explicit(
-						&(hnode->u.hash.array[pos]),
-						new_hash,
-						memory_order_relaxed);
+				struct ffp_node *tmp = valid_ptr(atomic_load_explicit(
+							&(hnode->u.hash.array[pos]),
+							memory_order_relaxed));
+				if(tmp != new_hash){
+					adjust_chain_nodes(
+							tmp,
+							new_hash);
+					atomic_store_explicit(
+							&(hnode->u.hash.array[pos]),
+							new_hash,
+							memory_order_relaxed);
+				}
 				return adjust_node(
 						cnode,
 						new_hash);
