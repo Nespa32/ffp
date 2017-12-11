@@ -1,6 +1,6 @@
 CC=gcc
 CFLAGS=-std=gnu11 -g -Wall -O3 -flto
-LFLAGS=-pthread -lpthread
+LFLAGS=-pthread -lpthread -lrt
 JEFLAGS=-L`jemalloc-config --libdir` -Wl,-rpath,`jemalloc-config --libdir` -ljemalloc `jemalloc-config --libs` -static
 SEQFLAGS=-ldl
 
